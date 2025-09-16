@@ -142,7 +142,7 @@ Ports: analog-output-speaker analog-output-headphones
 Active Port: analog-output-headphones
 ```
 
-As we can see, there is only one audio sink that can play audio on the two outputs individually (yours may vary)
+As we can see, there is only one audio sink `alsa_output.pci-0000_00_1f.3.analog-stereo` that can play audio on the two ports `analog-output-speaker analog-output-headphones` individually (yours may vary)
 
 ## 2 disable Headphone jack detection for speakers
 
@@ -174,13 +174,13 @@ As we can see, there is only one audio sink that can play audio on the two outpu
 
     Once verified, change the `description-key` back to the default value
 
-3. Delete all the other files in `/etc/alsa-card-profile/mixer/paths/` leaving only your mixer path (in my case is `analog-output-speaker`) and the common file e.g:
+3. Delete all the other files in `/etc/alsa-card-profile/mixer/paths/` leaving only your mixer path (in my case is `analog-output-speaker.conf`) and the common file e.g:
 
     ```sh
     sudo find /etc/alsa-card-profile/mixer/paths/ -type f ! -name 'analog-output-speaker.conf' ! -name 'analog-output.conf.common' -exec rm -f {} +
     ```
 
-4. Edit the mixer path to disable Jack detection and auto-muting:
+4. Edit the mixer path (in my case is `analog-output-speaker.conf`) to disable Jack detection and auto-muting:
 
    - Set `state.plugged = unknown` inside the **Jack** section that best matches the wired port name of your card, in my case is `analog-output-headphones` so I use `[Jack Headphone]` one:
 
@@ -204,8 +204,9 @@ As we can see, there is only one audio sink that can play audio on the two outpu
 
         <details>
         <summary>Expand</summary>
+
         ```sh
-        pacman -Q $(pacman -Qsq "alsa-*|pipewire|wireplumber")
+        $ pacman -Q $(pacman -Qsq "alsa-*|pipewire|wireplumber")
         alsa-card-profiles 1:1.4.2-1
         alsa-lib 1.2.14-1
         alsa-plugins 1:1.2.12-4
@@ -231,6 +232,7 @@ As we can see, there is only one audio sink that can play audio on the two outpu
         qemu-audio-pipewire 10.0.0-5
         wireplumber 0.5.10-1
         ```
+
         </details>
 
 5. Save the changes and restart the audio server by running:
@@ -252,7 +254,7 @@ If everything went well you should have the speaker option available without hav
 
 Congratulations! We're closer to our final goal, but you may stop here if this was your desired behavior 🙂
 
-Continue to [3.2 Making the alsa firmware patch file](#32-making-the-alsa-firmware-patch-file) for **the real deal**
+Continue to [3 Splitting for simultaneous playback with alsa firmware patch](#3-splitting-for-simultaneous-playback-with-alsa-firmware-patch-for-different-applications-on-each-port) for **the real deal**
 
 ### 2.2 Can switch to output X when Y is connected but X has no audio (even when un-muted)
 
@@ -333,7 +335,7 @@ Subsystem Id: 0x103c8575
 
 With the above we can start creating our patch file:
 
-1. Create the file (don't copy as is, modify according to explanation bellow):
+1. Create the following file (don't copy as is, modify according to explanation bellow):
 
     `/lib/firmware/hda-jack-retask.fw`
 
@@ -368,7 +370,7 @@ With the above we can start creating our patch file:
 
 #### Option 3 Manually for immutable distributions using script and udev rule
 
-For immutable distros `/lib/firmware/` is not writable. As a workaround you can use an udev rule that sets the hints on boot. **This method may cause some noises during boot and is not warranted to be as reliable as the firmware one, if that's the case, suggestions to improve it are welcome**
+For immutable distros `/lib/firmware/` is not writable. As a workaround you can use an udev rule that sets the hints on boot. **This method may cause some noises during boot and is not guaranteed to be as reliable as the firmware one, if that's the case for you, suggestions to improve it are welcome**
 
 1. Create the file `/etc/udev/rules.d/91-pipewire-alsa-port-split.rules` (don't copy as is, modify according to explanation bellow)
 
@@ -383,41 +385,43 @@ For immutable distros `/lib/firmware/` is not writable. As a workaround you can 
     LABEL="pipewire_end"
     ```
 
-2. Create the script `/usr/local/bin/alsa-split-ports-hints.sh` and set `CODEC` `VENDOR_ID` and `SUBSYSTEN_ID` with the ones from your card from `cat /proc/asound/card*/codec#* | grep -E 'Codec|Vendor Id|Subsystem Id|Address'`, note how the `CODEC` variable doesn't have the vendor name (`Realtek`) because whe are matching against `/sys/class/sound/hw*/chip_name`
+    Replace `0x8086` and `0xa348` with the values of `device.vendor.id` and `device.product.id` that you got from `pactl list cards` in [1.1 Gather some information about the card](#11-gather-some-information-about-the-card)
+
+2. Create the script `/usr/local/bin/alsa-split-ports-hints.sh` and set `VENDOR_ID` and `SUBSYSTEN_ID` with the ones from your card from `cat /proc/asound/card*/codec#* | grep -E 'Codec|Vendor Id|Subsystem Id|Address'`.
 
    ```sh
     #!/usr/bin/env bash
-    CODEC="ALC295"
     VENDOR_ID="0x10ec0295"
     SUBSYSTEN_ID="0x103c8575"
     HINTS="indep_hp = yes
     vmaster = no
     "
 
-    get_codec_hwdep() {
-        local codec=$1
-        local vendor_id=$2
-        local subsystem_id=$3
-        local addr=""
-        [[ -z "$codec" || -z "$vendor_id" || -z "$subsystem_id" ]] && { echo "ERROR: Not enough arguments given"; return; }
-        for file in /sys/class/sound/hw*; do
-            if [[ -n "$addr" ]]; then
-            echo "$addr"
-            return
-            fi
-            if grep -q "$codec" "$file/chip_name" && grep -q "$vendor_id" "$file/vendor_id" && grep -q "$subsystem_id" "$file/subsystem_id"; then
-                addr=$file
+    # log output to system log
+    exec 1> >(logger -s -t "$(basename "$0")") 2>&1
+
+    get_codec() {
+        local vendor_id=$1
+        local subsystem_id=$2
+        [[ -z "$vendor_id" || -z "$subsystem_id" ]] && { echo "ERROR: Not enough arguments given"; return; }
+        for hw in /sys/class/sound/card*/hwC*D*; do
+            if grep -q "$vendor_id" "$hw/vendor_id" && grep -q "$subsystem_id" "$hw/subsystem_id"; then
+                echo "Found matching codec: $hw $(cat "$hw"/vendor_name) - $(cat "$hw"/chip_name) Vendor Id: $(cat "$hw"/vendor_id) Subsystem Id: $(cat "$hw"/subsystem_id)"
+                codec=$hw
+                break
             fi
         done
-        if [[ -z "$addr" ]]; then
-        echo "ERROR: Could not get address for c:$codec v:$vendor_id s:$subsystem_id"
-        return
-        fi
     }
-    # get_codec_hwdep "$CODEC" "$VENDOR_ID" "$SUBSYSTEN_ID"
-    hwdep="$(get_codec_hwdep "$CODEC" "$VENDOR_ID" "$SUBSYSTEN_ID")"
 
-    if [[ "$hwdep" == *"ERROR"* || -z "$hwdep" ]]; then
+    codec=""
+    get_codec "$VENDOR_ID" "$SUBSYSTEN_ID"
+
+    if [[ -z "$codec" ]]; then
+    echo "ERROR: Could not get codec for VENDOR_ID: $VENDOR_ID SUBSYSTEN_ID: $SUBSYSTEN_ID"
+    echo "Codecs found:"
+    for hw in /sys/class/sound/card*/hwC*D*; do
+        echo "$hw" "$(cat "$hw"/vendor_name)" - "$(cat "$hw"/chip_name)" Vendor Id: "$(cat "$hw"/vendor_id)" Subsystem Id: "$(cat "$hw"/subsystem_id)"
+    done
     exit 1
     fi
 
@@ -426,19 +430,63 @@ For immutable distros `/lib/firmware/` is not writable. As a workaround you can 
     if [[ -z "$line" ]]; then
         continue
     fi
-    echo "$line > ${hwdep}/hints"
-    echo "$line" > "${hwdep}"/hints
+    echo "$line > ${codec}/hints"
+    echo "$line" > "${codec}"/hints
     done <<< "$HINTS"
 
-    echo "echo 1 > ${hwdep}/reconfig"
-    echo 1 > "${hwdep}"/reconfig
+    echo "echo 1 > ${codec}/reconfig"
+    echo 1 > "${codec}"/reconfig
 
-    # wait some time to intialize before restoring
+    # give some time to intialize before restoring
     sleep 5
     alsactl restore
    ```
 
 3. **Reboot to apply the changes**
+4. To verify that the udev rule and the script are configured properly check the system logs for the script output:
+
+```sh
+journalctl -b --no-pager | grep -E 'alsa-split-ports.sh|snd_hda|Sound Card'
+```
+
+<details>
+<summary>Example of working output</summary>
+
+```sh
+Sep 15 23:44:44 archlinux kernel: snd_hda_intel 0000:00:1f.3: enabling device (0000 -> 0002)
+Sep 15 23:44:44 archlinux kernel: snd_hda_intel 0000:00:1f.3: bound 0000:00:02.0 (ops intel_audio_component_bind_ops [i915])
+Sep 15 23:44:44 archlinux kernel: snd_hda_intel 0000:01:00.1: enabling device (0000 -> 0002)
+Sep 15 23:44:44 archlinux kernel: snd_hda_intel 0000:01:00.1: Disabling MSI
+Sep 15 23:44:44 archlinux kernel: snd_hda_intel 0000:01:00.1: Handle vga_switcheroo audio client
+Sep 15 23:44:44 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0: ALC295: picked fixup  for PCI SSID 103c:0000
+Sep 15 23:44:44 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0: autoconfig for ALC295: line_outs=1 (0x17/0x0/0x0/0x0/0x0) type:speaker
+Sep 15 23:44:44 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:    speaker_outs=0 (0x0/0x0/0x0/0x0/0x0)
+Sep 15 23:44:44 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:    hp_outs=1 (0x21/0x0/0x0/0x0/0x0)
+Sep 15 23:44:44 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:    mono: mono_out=0x0
+Sep 15 23:44:44 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:    inputs:
+Sep 15 23:44:44 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:      Internal Mic=0x12
+Sep 15 23:44:44 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:      Mic=0x19
+Sep 15 23:44:44 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:      Mic=0x1b
+Sep 15 23:44:45 archlinux alsa-split-ports.sh[1421]: Found matching codec: /sys/class/sound/card0/hwC0D0 Realtek - ALC295 Vendor Id: 0x10ec0295 Subsystem Id: 0x103c8575
+Sep 15 23:44:45 archlinux alsa-split-ports.sh[1421]: indep_hp = yes > /sys/class/sound/card0/hwC0D0/hints
+Sep 15 23:44:45 archlinux alsa-split-ports.sh[1421]: vmaster = no > /sys/class/sound/card0/hwC0D0/hints
+Sep 15 23:44:45 archlinux alsa-split-ports.sh[1421]: echo 1 > /sys/class/sound/card0/hwC0D0/reconfig
+Sep 15 23:44:45 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0: hda-codec: reconfiguring
+Sep 15 23:44:45 archlinux systemd[1]: Starting Save/Restore Sound Card State...
+Sep 15 23:44:45 archlinux systemd[1]: Manage Sound Card State (restore and store) was skipped because of an unmet condition check (ConditionPathExists=/etc/alsa/state-daemon.conf).
+Sep 15 23:44:45 archlinux systemd[1]: Finished Save/Restore Sound Card State.
+Sep 15 23:44:45 archlinux systemd[1]: Reached target Sound Card.
+Sep 15 23:44:45 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0: autoconfig for ALC295: line_outs=1 (0x17/0x0/0x0/0x0/0x0) type:speaker
+Sep 15 23:44:45 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:    speaker_outs=0 (0x0/0x0/0x0/0x0/0x0)
+Sep 15 23:44:45 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:    hp_outs=1 (0x21/0x0/0x0/0x0/0x0)
+Sep 15 23:44:45 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:    mono: mono_out=0x0
+Sep 15 23:44:45 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:    inputs:
+Sep 15 23:44:45 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:      Internal Mic=0x12
+Sep 15 23:44:45 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:      Mic=0x19
+Sep 15 23:44:45 archlinux kernel: snd_hda_codec_realtek hdaudioC0D0:      Mic=0x1b
+```
+
+</details>
 
 ### 3.3 Verify that the patch works
 
@@ -460,7 +508,7 @@ card 0: PCH [HDA Intel PCH], device 2: ALC295 Alt Analog [ALC295 Alt Analog]
   Subdevice #0: subdevice #0
 ```
 
-Now the card ALC295 (`card 0`), has an extra sub device (`2`), interesting...
+Now the card ALC295 (`card 0`), has an extra device (`2`), interesting...
 
 Run `cat /proc/asound/pcm`, if there is a new sub device and has a playback sub-stream (`playback 1`) like below you can continue
 
@@ -472,27 +520,27 @@ Run `cat /proc/asound/pcm`, if there is a new sub device and has a playback sub-
 
 #### 3.3.1 Identify what output each device corresponds to
 
-1. Plug-in your wired audio device then run `alsamixer -c0` (replace 0 with your card #number if needed)
-   1. Un-mute any muted device (the ones with MM below the volume slider) pressing `m`
+1. Stop the audio services (may need to stop it multiple times if it gets automatically restarted):
+
+    ```sh
+    systemctl --user stop pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+    ```
+
+2. Plug-in your wired audio device then run `alsamixer -c0` (replace 0 with your card number if needed)
+   1. Un-mute any muted device (the ones with MM below the volume slider) by pressing `m`
    2. Increase their volume to around 30 if the're on 0
    3. Enable `Independent HP` if is not enabled
    4. Press `Esc` to exit.
 
    ![alsamixer with unmuted outputs](pics/alsamixer-unmuted-outputs.png)
 
-2. Finally, save it by running
+3. Finally, save it by running
 
     ```sh
     sudo alsactl store
     ```
 
-3. Stop any running pipewire services (may need to stop it multiple times if it gets restarted):
-
-    ```sh
-    systemctl --user stop pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service
-    ```
-
-4. Run `speaker-test -Dhw:0,0 -c2` (replace 0,0 with the card #number and device #numbers from your card from `aplay -l`)
+4. Run `speaker-test -Dhw:0,0 -c2` (replace 0,0 with the card number and device numbers from your card from `aplay -l`)
 
     For the device 0 (speaker-test -Dhw:0,0 -c2) the sound comes out from the speakers, so `device 0` is the speakers
 
@@ -548,7 +596,7 @@ So in my case I have:
   - Device `0,0` (card 0, device 0) Speakers (also handles microphones)
   - Device `0,2` (card 0, device 2) Headphones
 
-### 4.2 Create the profile
+### 4.2 Create the alsa card profile
 
 1. Rename your mixer path file from [2 disable Headphone jack detection for speakers](#2-disable-headphone-jack-detection-for-speakers) like below:
 
@@ -575,7 +623,7 @@ So in my case I have:
 
     ; This is the mapping for the internal speaker
     ; If needed, change the 0 in "hw:%f,0" to your sub device location
-    ; You can change the description for this and other mappings if you want
+    ; You can change the description for this and other mappings if you want,
     ; in paths output put the name of the previously created custom mixer path
     [Mapping analog-stereo-speaker]
     description = Speakers
@@ -585,8 +633,8 @@ So in my case I have:
     direction = output
 
     ; This is the mapping for the jack output (headphones)
-    ; If needed, change the 2 in "hw:%f,2" to your sub device location
-    ; in paths output put the name of the from card details
+    ; If needed, change the 2 in "hw:%f,2" to your sub device location,
+    ; in paths output put the name of the port from card details
     [Mapping analog-stereo-headphones]
     description = Headphones
     device-strings = hw:%f,2
@@ -615,7 +663,7 @@ So in my case I have:
     ; in output-mappings put the name of the output mappings
     ; input-mappings put the name of the input mappings
 
-    ; NOTE: Not to be confused width the paths-output/paths-input inside the mapping, we're not using those directly
+    ; NOTE: Not to be confused width the paths-output/paths-input values inside the mapping, we're not using those directly
 
     ; This is the profile that will have the internal speakers + jack output + all microphones
     ; in paths output put the name of the from card details
@@ -652,9 +700,9 @@ So in my case I have:
     LABEL="pipewire_end"
     ```
 
-2. Replace the vendor and device id with `device.vendor.id` and `device.product.id` respectively, that you got in [1.1 Gather some information about the card](#11-gather-some-information-about-the-card)
+   Replace `0x8086` and `0xa348` with the values of `device.vendor.id` and `device.product.id` that you got from `pactl list cards` in [1.1 Gather some information about the card](#11-gather-some-information-about-the-card)
 
-3. **Reboot to apply the changes**
+2. **Reboot to apply the changes**
 
 ### 5 Verify the split worked
 
@@ -685,11 +733,13 @@ Ports:
 Active Port: analog-output-speaker-split
 ```
 
+If there is no `device.profile-set = "/etc/alsa-card-profile/mixer/profile-sets/split-ports-profile.conf`, double check the vendor and device values in the udev rule.
+
 Now you should be able to play different applications on each sink, you can do that with pavucontrol or KDE's Audio Volume widget. Congratulations! 🎉
 
 ## Stuck or didn't work? Found an mistake or something isn't clear enough?
 
-If you faced any problems or are stuck [please open a new issue](https://github.com/luisbocanegra/linux-guide-split-audio-ports/issues/new) including the information [as described here](https://github.com/luisbocanegra/linux-guide-split-audio-ports/issues/9)
+If you faced any problems or are stuck please open a new issue, you **MUST** follow the [Help request issue template](https://github.com/luisbocanegra/linux-guide-split-audio-ports/issues/new?assignees=&labels=help-request&projects=&template=help_request.md&title=%5BHelp+request%5D%3A+).
 
 ## Support me
 

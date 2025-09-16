@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
-CODEC="ALC295"
 VENDOR_ID="0x10ec0295"
 SUBSYSTEN_ID="0x103c8575"
 HINTS="indep_hp = yes
 vmaster = no
 "
 
-get_codec_hwdep() {
-    local codec=$1
-    local vendor_id=$2
-    local subsystem_id=$3
-    local addr=""
-    [[ -z "$codec" || -z "$vendor_id" || -z "$subsystem_id" ]] && { echo "ERROR: Not enough arguments given"; return; }
-    for file in /sys/class/sound/hw*; do
-        if [[ -n "$addr" ]]; then
-          echo "$addr"
-          return
-        fi
-        if grep -q "$codec" "$file/chip_name" && grep -q "$vendor_id" "$file/vendor_id" && grep -q "$subsystem_id" "$file/subsystem_id"; then
-            addr=$file
+# log output to system log
+exec 1> >(logger -s -t "$(basename "$0")") 2>&1
+
+get_codec() {
+    local vendor_id=$1
+    local subsystem_id=$2
+    [[ -z "$vendor_id" || -z "$subsystem_id" ]] && { echo "ERROR: Not enough arguments given"; return; }
+    for hw in /sys/class/sound/card*/hwC*D*; do
+        if grep -q "$vendor_id" "$hw/vendor_id" && grep -q "$subsystem_id" "$hw/subsystem_id"; then
+            echo "Found matching codec: $hw $(cat "$hw"/vendor_name) - $(cat "$hw"/chip_name) Vendor Id: $(cat "$hw"/vendor_id) Subsystem Id: $(cat "$hw"/subsystem_id)"
+            codec=$hw
+            break
         fi
     done
-    if [[ -z "$addr" ]]; then
-      echo "ERROR: Could not get address for c:$codec v:$vendor_id s:$subsystem_id"
-      return
-    fi
 }
-# get_codec_hwdep "$CODEC" "$VENDOR_ID" "$SUBSYSTEN_ID"
-hwdep="$(get_codec_hwdep "$CODEC" "$VENDOR_ID" "$SUBSYSTEN_ID")"
 
-if [[ "$hwdep" == *"ERROR"* || -z "$hwdep" ]]; then
+codec=""
+get_codec "$VENDOR_ID" "$SUBSYSTEN_ID"
+
+if [[ -z "$codec" ]]; then
+  echo "ERROR: Could not get codec for VENDOR_ID: $VENDOR_ID SUBSYSTEN_ID: $SUBSYSTEN_ID"
+  echo "Codecs found:"
+  for hw in /sys/class/sound/card*/hwC*D*; do
+    echo "$hw" "$(cat "$hw"/vendor_name)" - "$(cat "$hw"/chip_name)" Vendor Id: "$(cat "$hw"/vendor_id)" Subsystem Id: "$(cat "$hw"/subsystem_id)"
+  done
   exit 1
 fi
 
@@ -38,12 +38,12 @@ while IFS=$'\n' read -r line; do
   if [[ -z "$line" ]]; then
       continue
   fi
-  echo "$line > ${hwdep}/hints"
-  echo "$line" > "${hwdep}"/hints
+  echo "$line > ${codec}/hints"
+  echo "$line" > "${codec}"/hints
 done <<< "$HINTS"
 
-echo "echo 1 > ${hwdep}/reconfig"
-echo 1 > "${hwdep}"/reconfig
+echo "echo 1 > ${codec}/reconfig"
+echo 1 > "${codec}"/reconfig
 
 # give some time to intialize before restoring
 sleep 5
