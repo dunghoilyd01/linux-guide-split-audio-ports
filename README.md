@@ -387,7 +387,7 @@ For immutable distros `/lib/firmware/` is not writable. As a workaround you can 
 
     Replace `0x8086` and `0xa348` with the values of `device.vendor.id` and `device.product.id` that you got from `pactl list cards` in [1.1 Gather some information about the card](#11-gather-some-information-about-the-card)
 
-2. Create the script `/usr/local/bin/alsa-split-ports-hints.sh` and set `VENDOR_ID` and `SUBSYSTEN_ID` with the ones from your card from `cat /proc/asound/card*/codec#* | grep -E 'Codec|Vendor Id|Subsystem Id|Address'`.
+2. Create the script `/usr/local/bin/alsa-split-ports.sh` and set `VENDOR_ID` and `SUBSYSTEN_ID` with the ones from your card from `cat /proc/asound/card*/codec#* | grep -E 'Codec|Vendor Id|Subsystem Id|Address'`.
 
    ```sh
     #!/usr/bin/env bash
